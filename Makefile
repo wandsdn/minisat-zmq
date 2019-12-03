@@ -1,6 +1,6 @@
 ###################################################################################################
 
-.PHONY:	r d p sh cr cd cp csh lr ld lp lsh config all install install-bin clean distclean
+.PHONY:	r d p sh cr cd cp csh lr ld lp lsh config all install install-bin clean distclean standalone
 all:	r
 
 ## Load Previous Configuration ####################################################################
@@ -17,13 +17,14 @@ MINUMERATE_RELSYM ?= -g
 
 # Sets of compile flags for different build types
 MINUMERATE_REL    ?= -O3 -D NDEBUG
-MINUMERATE_DEB    ?= -O0 -D DEBUG 
+MINUMERATE_DEB    ?= -O0 -D DEBUG -ggdb
 MINUMERATE_PRF    ?= -O3 -D NDEBUG
 MINUMERATE_FPIC   ?= -fpic
 
 # Dependencies
 MINISAT_INCLUDE?=
-MINISAT_LIB    ?=-lminisat
+MINISAT_LIB       ?= -lminisat -lzmqpp -lzmq -lsodium -pthread
+MINISAT_STATIC_LDFLAGS ?= -static -static-libgcc -static-libstdc++
 
 # GNU Standard Install Prefix
 prefix         ?= /usr/local
@@ -39,6 +40,7 @@ config:
 	   echo 'MINUMERATE_FPIC?=$(MINUMERATE_FPIC)'     ; \
 	   echo 'MINISAT_INCLUDE?=$(MINISAT_INCLUDE)'     ; \
 	   echo 'MINISAT_LIB?=$(MINISAT_LIB)'	          ; \
+	   echo 'MINISAT_STATIC_LDFLAGS?=$(MINISAT_STATIC_LDFLAGS)' ; \
 	   echo 'prefix?=$(prefix)'                       ) > config.mk
 
 ## Configurable options end #######################################################################
@@ -54,12 +56,12 @@ datarootdir ?= $(prefix)/share
 mandir      ?= $(datarootdir)/man
 
 # Target file names
-MINUMERATE      = minumerate#       Name of main executable.
+MINUMERATE      = minisat-zmq  # Name of main executable.
 
-SRCS            = Main.cc Minumerate.cc
+SRCS            = Main.cc
 
 # Compile flags
-MINUMERATE_CXXFLAGS = -I. -D __STDC_LIMIT_MACROS -D __STDC_FORMAT_MACROS -Wall -Wno-parentheses -Wextra $(MINISAT_INCLUDE)
+MINUMERATE_CXXFLAGS = -I. -D __STDC_LIMIT_MACROS -D __STDC_FORMAT_MACROS -Wall -std=c++11 -Wno-parentheses -Wextra $(MINISAT_INCLUDE)
 MINUMERATE_LDFLAGS  = -Wall -lz $(MINISAT_LIB)
 
 ifeq ($(VERB),)
@@ -74,24 +76,28 @@ r:	$(BUILD_DIR)/release/bin/$(MINUMERATE)
 d:	$(BUILD_DIR)/debug/bin/$(MINUMERATE)
 p:	$(BUILD_DIR)/profile/bin/$(MINUMERATE)
 sh:	$(BUILD_DIR)/dynamic/bin/$(MINUMERATE)
+standalone:	$(BUILD_DIR)/standalone/bin/$(MINUMERATE)
 
 ## Build-type Compile-flags:
 $(BUILD_DIR)/release/%.o:			MINUMERATE_CXXFLAGS +=$(MINUMERATE_REL) $(MINUMERATE_RELSYM)
 $(BUILD_DIR)/debug/%.o:				MINUMERATE_CXXFLAGS +=$(MINUMERATE_DEB) -g
 $(BUILD_DIR)/profile/%.o:			MINUMERATE_CXXFLAGS +=$(MINUMERATE_PRF) -pg
 $(BUILD_DIR)/dynamic/%.o:			MINUMERATE_CXXFLAGS +=$(MINUMERATE_REL) $(MINUMERATE_FPIC)
+$(BUILD_DIR)/standalone/%.o:			MINUMERATE_CXXFLAGS +=$(MINUMERATE_REL)
 
 ## Build-type Link-flags:
 $(BUILD_DIR)/profile/bin/$(MINUMERATE):		MINUMERATE_LDFLAGS += -pg
-$(BUILD_DIR)/release/bin/$(MINUMERATE):		MINUMERATE_LDFLAGS += --static $(MINUMERATE_RELSYM)
+$(BUILD_DIR)/release/bin/$(MINUMERATE):		MINUMERATE_LDFLAGS += $(MINUMERATE_RELSYM)
 $(BUILD_DIR)/profile/bin/$(MINUMERATE_CORE):	MINUMERATE_LDFLAGS += -pg
-$(BUILD_DIR)/release/bin/$(MINUMERATE_CORE):	MINUMERATE_LDFLAGS += --static $(MINUMERATE_RELSYM)
+$(BUILD_DIR)/release/bin/$(MINUMERATE_CORE):	MINUMERATE_LDFLAGS += $(MINUMERATE_RELSYM)
+$(BUILD_DIR)/standalone/bin/$(MINUMERATE):	MINUMERATE_LDFLAGS := $(MINISAT_STATIC_LDFLAGS) $(MINUMERATE_LDFLAGS)
 
 ## Executable dependencies
-$(BUILD_DIR)/release/bin/$(MINUMERATE):	 	$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/release/$o)
-$(BUILD_DIR)/debug/bin/$(MINUMERATE):	 	$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/debug/$o)
-$(BUILD_DIR)/profile/bin/$(MINUMERATE):	 	$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/profile/$o)
-$(BUILD_DIR)/dynamic/bin/$(MINUMERATE):	 	$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/dynamic/$o)
+$(BUILD_DIR)/release/bin/$(MINUMERATE):		$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/release/$o)
+$(BUILD_DIR)/debug/bin/$(MINUMERATE):		$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/debug/$o)
+$(BUILD_DIR)/profile/bin/$(MINUMERATE):		$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/profile/$o)
+$(BUILD_DIR)/dynamic/bin/$(MINUMERATE):		$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/dynamic/$o)
+$(BUILD_DIR)/standalone/bin/$(MINUMERATE):		$(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/standalone/$o)
 
 ## Compile rules (these should be unified, buit I have not yet found a way which works in GNU Make)
 $(BUILD_DIR)/release/%.o:	%.cc
@@ -114,8 +120,15 @@ $(BUILD_DIR)/dynamic/%.o:	%.cc
 	$(VERB) mkdir -p $(dir $@) $(dir $(BUILD_DIR)/dep/$*.d)
 	$(VERB) $(CXX) $(MINUMERATE_CXXFLAGS) $(CXXFLAGS) -c -o $@ $< -MMD -MF $(BUILD_DIR)/dep/$*.d
 
+$(BUILD_DIR)/standalone/%.o:	%.cc
+	$(ECHO) echo Warning compiling as a static binary which requires musl libc
+	$(ECHO) echo See build_standalone_docker.sh
+	$(ECHO) echo Compiling: $@
+	$(VERB) mkdir -p $(dir $@) $(dir $(BUILD_DIR)/dep/$*.d)
+	$(VERB) $(CXX) $(MINUMERATE_CXXFLAGS) $(CXXFLAGS) -c -o $@ $< -MMD -MF $(BUILD_DIR)/dep/$*.d
+
 ## Linking rule
-$(BUILD_DIR)/release/bin/$(MINUMERATE) $(BUILD_DIR)/debug/bin/$(MINUMERATE) $(BUILD_DIR)/profile/bin/$(MINUMERATE) $(BUILD_DIR)/dynamic/bin/$(MINUMERATE):
+$(BUILD_DIR)/release/bin/$(MINUMERATE) $(BUILD_DIR)/debug/bin/$(MINUMERATE) $(BUILD_DIR)/profile/bin/$(MINUMERATE) $(BUILD_DIR)/dynamic/bin/$(MINUMERATE) $(BUILD_DIR)/standalone/bin/$(MINUMERATE):
 	$(ECHO) echo Linking Binary: $@
 	$(VERB) mkdir -p $(dir $@)
 	$(VERB) $(CXX) $^ $(MINUMERATE_LDFLAGS) $(LDFLAGS) -o $@
@@ -129,7 +142,7 @@ install-bin: $(BUILD_DIR)/dynamic/bin/$(MINUMERATE)
 clean:
 	rm -f $(foreach t, release debug profile dynamic, $(foreach o, $(SRCS:.cc=.o), $(BUILD_DIR)/$t/$o)) \
 	  $(foreach d, $(SRCS:.cc=.d), $(BUILD_DIR)/dep/$d) \
-	  $(foreach t, release debug profile dynamic, $(BUILD_DIR)/$t/bin/$(MINUMERATE))
+	  $(foreach t, release debug profile dynamic standalone, $(BUILD_DIR)/$t/bin/$(MINUMERATE))
 
 distclean:	clean
 	rm -f config.mk
